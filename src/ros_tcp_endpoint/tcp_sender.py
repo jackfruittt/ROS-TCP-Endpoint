@@ -12,7 +12,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import rospy
 import socket
 import time
 import threading
@@ -23,13 +22,8 @@ from .client import ClientThread
 from .thread_pauser import ThreadPauser
 from io import BytesIO
 
-# queue module was renamed between python 2 and 3
-try:
-    from queue import Queue
-    from queue import Empty
-except:
-    from Queue import Queue
-    from Queue import Empty
+from queue import Queue
+from queue import Empty
 
 
 class UnityTcpSender:
@@ -101,11 +95,13 @@ class UnityTcpSender:
         serialized_message = ClientThread.serialize_message(topic, request)
         self.queue.put(b"".join([serialized_header, serialized_message]))
 
-        # rospy starts a new thread for each service request,
+        # rclpy starts a new thread for each service request,
         # so it won't break anything if we sleep now while waiting for the response
         thread_pauser.sleep_until_resumed()
 
-        response = service_class._response_class().deserialize(thread_pauser.result)
+        # ROS2 deserialization for service response
+        from rclpy.serialization import deserialize_message
+        response = deserialize_message(thread_pauser.result, service_class.Response)
         return response
 
     def send_unity_service_response(self, srv_id, data):
@@ -131,9 +127,10 @@ class UnityTcpSender:
     def send_topic_list(self):
         if self.queue is not None:
             topic_list = SysCommand_TopicsResponse()
-            topics_and_types = rospy.get_published_topics()
+            # ROS2 way to get published topics
+            topics_and_types = self.tcp_server.get_topic_names_and_types()
             topic_list.topics = [item[0] for item in topics_and_types]
-            topic_list.types = [item[1] for item in topics_and_types]
+            topic_list.types = [item[1][0] if item[1] else '' for item in topics_and_types]
             serialized_bytes = ClientThread.serialize_command("__topic_list", topic_list)
             self.queue.put(serialized_bytes)
 
@@ -217,4 +214,4 @@ class SysCommand_Handshake:
 
 class SysCommand_Handshake_Metadata:
     def __init__(self):
-        self.protocol = "ROS1"
+        self.protocol = "ROS2"

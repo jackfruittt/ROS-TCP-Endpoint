@@ -12,8 +12,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import rospy
-import socket
 import re
 
 from .communication import RosReceiver
@@ -30,7 +28,7 @@ class RosSubscriber(RosReceiver):
 
         Args:
             topic:         Topic name to publish messages to
-            message_class: The message class in catkin workspace
+            message_class: The message class in the workspace
             queue_size:    Max number of entries to maintain in an outgoing queue
         """
         strippedTopic = re.sub("[^A-Za-z0-9_]+", "", topic)
@@ -41,8 +39,13 @@ class RosSubscriber(RosReceiver):
         self.tcp_server = tcp_server
         self.queue_size = queue_size
 
-        # Start Subscriber listener function
-        self.sub = rospy.Subscriber(self.topic, self.msg, self.send)
+        # Start Subscriber listener function using ROS2 create_subscription
+        self.sub = tcp_server.create_subscription(
+            self.msg,
+            self.topic,
+            self.send,
+            queue_size
+        )
 
     def send(self, data):
         """
@@ -59,9 +62,8 @@ class RosSubscriber(RosReceiver):
 
     def unregister(self):
         """
-
-        Returns:
-
+        Unregister the subscriber
         """
-        if not self.sub is None:
-            self.sub.unregister()
+        if self.sub is not None:
+            self.tcp_server.destroy_subscription(self.sub)
+            self.sub = None

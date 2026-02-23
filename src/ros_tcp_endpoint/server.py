@@ -12,7 +12,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import rospy
+import rclpy
+from rclpy.node import Node
 import socket
 import logging
 import json
@@ -28,31 +29,37 @@ from .service import RosService
 from .unity_service import UnityService
 
 
-class TcpServer:
+class TcpServer(Node):
     """
-    Initializes ROS node and TCP server.
+    Initializes ROS2 node and TCP server.
     """
 
     def __init__(self, node_name, buffer_size=1024, connections=10, tcp_ip=None, tcp_port=None):
         """
-        Initializes ROS node and class variables.
+        Initializes ROS2 node and class variables.
 
         Args:
             node_name:               ROS node name for executing code
             buffer_size:             The read buffer size used when reading from a socket
             connections:             Max number of queued connections. See Python Socket documentation
         """
+        super().__init__(node_name)
+        
+        # Declare parameters
+        self.declare_parameter('tcp_ip', '0.0.0.0')
+        self.declare_parameter('tcp_port', 10000)
+        
         if tcp_ip:
             self.loginfo("Using 'tcp_ip' override from constructor: {}".format(tcp_ip))
             self.tcp_ip = tcp_ip
         else:
-            self.tcp_ip = rospy.get_param("~tcp_ip", "0.0.0.0")
+            self.tcp_ip = self.get_parameter('tcp_ip').get_parameter_value().string_value
 
         if tcp_port:
             self.loginfo("Using 'tcp_port' override from constructor: {}".format(tcp_port))
             self.tcp_port = tcp_port
         else:
-            self.tcp_port = rospy.get_param("~tcp_port", 10000)
+            self.tcp_port = self.get_parameter('tcp_port').get_parameter_value().integer_value
 
         self.unity_tcp_sender = UnityTcpSender(self)
 
@@ -113,18 +120,23 @@ class TcpServer:
         if function is None:
             self.send_unity_error("Don't understand SysCommand.'{}'".format(topic))
         else:
-            message_json = data.decode("utf-8")
-            params = json.loads(message_json)
+            message_json = data.decode("utf-8").rstrip("\x00")
+            try:
+                params = json.loads(message_json)
+            except json.JSONDecodeError:
+                # Handle case where extra data exists after valid JSON
+                decoder = json.JSONDecoder()
+                params, _ = decoder.raw_decode(message_json)
             function(**params)
 
     def loginfo(self, text):
-        rospy.loginfo(text)
+        self.get_logger().info(str(text))
 
     def logwarn(self, text):
-        rospy.logwarn(text)
+        self.get_logger().warning(str(text))
 
     def logerr(self, text):
-        rospy.logerr(text)
+        self.get_logger().error(str(text))
 
     def unregister_node(self, old_node):
         if old_node is not None:
@@ -180,7 +192,7 @@ class SysCommands:
         if old_node is not None:
             self.tcp_server.unregister_node(old_node)
 
-        new_publisher = RosPublisher(topic, message_class, queue_size=queue_size, latch=latch)
+        new_publisher = RosPublisher(topic, message_class, self.tcp_server, queue_size=queue_size, latch=latch)
 
         self.tcp_server.publishers_table[topic] = new_publisher
 
@@ -207,7 +219,7 @@ class SysCommands:
         if old_node is not None:
             self.tcp_server.unregister_node(old_node)
 
-        new_service = RosService(topic, message_class)
+        new_service = RosService(topic, message_class, self.tcp_server)
 
         self.tcp_server.ros_services_table[topic] = new_service
 

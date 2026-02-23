@@ -2,18 +2,69 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE.md)
 [![Version](https://img.shields.io/github/v/tag/Unity-Technologies/ROS-TCP-Endpoint)](https://github.com/Unity-Technologies/ROS-TCP-Endpoint/releases)
-![ROS](https://img.shields.io/badge/ros-melodic,noetic-brightgreen)
-![ROS](https://img.shields.io/badge/ros2-foxy,galactic-brightgreen)
-
----
-
-We're currently working on lots of things! Please take a short moment fill out our [survey](https://unitysoftware.co1.qualtrics.com/jfe/form/SV_0ojVkDVW0nNrHkW) to help us identify what products and packages to build next.
+![ROS2](https://img.shields.io/badge/ros2-humble-brightgreen)
 
 ---
 
 ## Introduction
 
-[ROS](https://www.ros.org/) package used to create an endpoint to accept ROS messages sent from a Unity scene. This ROS package works in tandem with the [ROS TCP Connector](https://github.com/Unity-Technologies/ROS-TCP-Connector) Unity package.
+[ROS2](https://www.ros.org/) package used to create an endpoint to accept ROS messages sent from a Unity scene. This ROS package works in tandem with the [ROS TCP Connector](https://github.com/Unity-Technologies/ROS-TCP-Connector) Unity package.
+
+This package is designed for **ROS2 Humble**.
+
+### ROS2 Fork
+
+This is a fork of the original [Unity ROS-TCP-Endpoint](https://github.com/Unity-Technologies/ROS-TCP-Endpoint) updated for ROS2 Humble compatibility. Key changes include:
+- Migrated from ROS1 (rospy) to ROS2 (rclpy)
+- Updated QoS settings for ROS2 publisher/subscriber model
+- Converted launch files to ROS2 Python format
+- Updated package structure for ament_python build system
+
+## Installation
+
+### Prerequisites
+
+- ROS2 Humble installed
+- Python 3.10+
+
+### Building
+
+1. Clone this repository into your ROS2 workspace src folder:
+   ```bash
+   cd ~/ros2_ws/src
+   git clone https://github.com/Unity-Technologies/ROS-TCP-Endpoint.git
+   ```
+
+2. Build the package:
+   ```bash
+   cd ~/ros2_ws
+   colcon build --packages-select ros_tcp_endpoint
+   ```
+
+3. Source the workspace:
+   ```bash
+   source ~/ros2_ws/install/setup.bash
+   ```
+
+## Usage
+
+### Launch the endpoint
+
+```bash
+ros2 launch ros_tcp_endpoint endpoint_launch.py
+```
+
+### With custom parameters
+
+```bash
+ros2 launch ros_tcp_endpoint endpoint_launch.py tcp_ip:=0.0.0.0 tcp_port:=10000
+```
+
+### Run directly
+
+```bash
+ros2 run ros_tcp_endpoint default_server_endpoint
+```
 
 Instructions and examples on how to use this ROS package can be found on the [Unity Robotics Hub](https://github.com/Unity-Technologies/Unity-Robotics-Hub/blob/master/tutorials/ros_unity_integration/README.md) repository.
 

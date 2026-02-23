@@ -12,8 +12,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import rospy
-import socket
 import re
 
 from .communication import RosReceiver
@@ -29,8 +27,9 @@ class UnityService(RosReceiver):
         """
 
         Args:
-            topic:         Topic name to publish messages to
-            service_class: The message class in catkin workspace
+            topic:         Service name to register
+            service_class: The service class in the workspace
+            tcp_server:    The TcpServer node instance
             queue_size:    Max number of entries to maintain in an outgoing queue
         """
         strippedTopic = re.sub("[^A-Za-z0-9_]+", "", topic)
@@ -41,23 +40,34 @@ class UnityService(RosReceiver):
         self.tcp_server = tcp_server
         self.queue_size = queue_size
 
-        self.service = rospy.Service(self.topic, self.service_class, self.send)
+        # ROS2 service creation
+        self.service = tcp_server.create_service(
+            self.service_class,
+            self.topic,
+            self.send
+        )
 
-    def send(self, request):
+    def send(self, request, response):
         """
         Connect to TCP endpoint on client, pass along message and get reply
         Args:
-            data: message data to send outside of ROS network
+            request: service request data to send outside of ROS network
+            response: service response object to fill
 
         Returns:
             The response message
         """
-        return self.tcp_server.send_unity_service(self.topic, self.service_class, request)
+        result = self.tcp_server.send_unity_service(self.topic, self.service_class, request)
+        # Copy the result into the response
+        if result is not None:
+            for field in result.get_fields_and_field_types().keys():
+                setattr(response, field, getattr(result, field))
+        return response
 
     def unregister(self):
         """
-
-        Returns:
-
+        Unregister the service
         """
-        self.service.shutdown()
+        if self.service is not None:
+            self.tcp_server.destroy_service(self.service)
+            self.service = None

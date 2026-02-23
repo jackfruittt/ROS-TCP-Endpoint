@@ -14,7 +14,6 @@
 
 import struct
 import socket
-import rospy
 from io import BytesIO
 
 import threading
@@ -124,18 +123,13 @@ class ClientThread(threading.Thread):
         length = len(dest_bytes)
         dest_info = struct.pack("<I%ss" % length, length, dest_bytes)
 
-        serial_response = BytesIO()
-        message.serialize(serial_response)
-
-        # Per documention, https://docs.python.org/3.8/library/io.html#io.IOBase.seek,
-        # seek to end of stream for length
-        # SEEK_SET or 0 - start of the stream (the default); offset should be zero or positive
-        # SEEK_CUR or 1 - current stream position; offset may be negative
-        # SEEK_END or 2 - end of the stream; offset is usually negative
-        response_len = serial_response.seek(0, 2)
+        # ROS2 serialization
+        from rclpy.serialization import serialize_message
+        serial_response = serialize_message(message)
+        response_len = len(serial_response)
 
         msg_length = struct.pack("<I", response_len)
-        serialized_message = dest_info + msg_length + serial_response.getvalue()
+        serialized_message = dest_info + msg_length + serial_response
 
         return serialized_message
 

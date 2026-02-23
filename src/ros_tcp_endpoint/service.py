@@ -12,35 +12,36 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import rospy
-from rospy.service import ServiceException
 import re
 
+from rclpy.serialization import deserialize_message
 from .communication import RosSender
 
 
 class RosService(RosSender):
     """
-    Class to send messages to a ROS service.
+    Class to send messages to a ROS service (client).
     """
 
-    def __init__(self, service, service_class):
+    def __init__(self, service, service_class, tcp_server):
         """
         Args:
             service:        The service name in ROS
-            service_class:  The service class in catkin workspace
+            service_class:  The service class in the workspace
+            tcp_server:     The TcpServer node instance
         """
         strippedService = re.sub("[^A-Za-z0-9_]+", "", service)
         node_name = "{}_RosService".format(strippedService)
         RosSender.__init__(self, node_name)
 
-        self.srv_class = service_class._request_class()
-        self.srv = rospy.ServiceProxy(service, service_class)
+        self.srv_class = service_class
+        self.tcp_server = tcp_server
+        self.client = tcp_server.create_client(service_class, service)
 
     def send(self, data):
         """
         Takes in serialized message data from source outside of the ROS network,
-        deserializes it into it's class, calls the service with the message, and returns
+        deserializes it into its class, calls the service with the message, and returns
         the service's response.
 
         Args:
@@ -49,27 +50,38 @@ class RosService(RosSender):
         Returns:
             service response
         """
-        message = self.srv_class.deserialize(data)
+        # ROS2 deserialization for service request
+        request = deserialize_message(data, self.srv_class.Request)
 
         attempt = 0
 
         while attempt < 3:
-            try:
-                service_response = self.srv(message)
-                return service_response
-            except ServiceException:
+            if not self.client.wait_for_service(timeout_sec=1.0):
                 attempt += 1
-                print("Service Exception raised. Attempt: {}".format(attempt))
+                print("Service not available. Attempt: {}".format(attempt))
+                continue
+                
+            try:
+                future = self.client.call_async(request)
+                # Wait for the response
+                import rclpy
+                rclpy.spin_until_future_complete(self.tcp_server, future, timeout_sec=10.0)
+                
+                if future.result() is not None:
+                    return future.result()
+                else:
+                    attempt += 1
+                    print("Service call failed. Attempt: {}".format(attempt))
             except Exception as e:
+                attempt += 1
                 print("Exception Raised: {}".format(e))
 
         return None
 
     def unregister(self):
         """
-
-        Returns:
-
+        Unregister the service client
         """
-        if not self.srv is None:
-            self.srv.close()
+        if self.client is not None:
+            self.tcp_server.destroy_client(self.client)
+            self.client = None
