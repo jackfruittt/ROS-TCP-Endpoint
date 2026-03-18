@@ -13,25 +13,28 @@
 #  limitations under the License.
 
 import re
-from rclpy.qos import QoSProfile, DurabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from rclpy.serialization import deserialize_message
 from .communication import RosSender
 
 
 class RosPublisher(RosSender):
     """
-    Class to publish messages to a ROS topic
+    Publishes messages to ROS topics from external clients.
     """
 
-    def __init__(self, topic, message_class, tcp_server, queue_size=10, latch=False):
+    def __init__(self, topic, message_class, tcp_server, queue_size=10, latch=False,
+                 qos_profile=None, reliability="reliable", history="keep_last"):
         """
-
         Args:
-            topic:         Topic name to publish messages to
-            message_class: The message class in the workspace
-            tcp_server:    The TcpServer node instance
-            queue_size:    Max number of entries to maintain in an outgoing queue
-            latch:         Whether to use transient local durability (ROS2 equivalent of latch)
+            topic:         Topic name to publish to
+            message_class: Message class for serialisation
+            tcp_server:    TcpServer node instance
+            queue_size:    Max messages to buffer
+            latch:         Use transient local durability for late joiners
+            qos_profile:   Optional QoSProfile (overrides other QoS params)
+            reliability:   "reliable" or "best_effort"
+            history:       "keep_last" or "keep_all"
         """
         strippedTopic = re.sub("[^A-Za-z0-9_]+", "", topic)
         node_name = "{}_RosPublisher".format(strippedTopic)
@@ -40,25 +43,42 @@ class RosPublisher(RosSender):
         self.msg_instance = message_class()
         self.tcp_server = tcp_server
         
-        # Set up QoS profile with transient local durability if latch is True
-        qos_profile = QoSProfile(depth=queue_size)
-        if latch:
-            qos_profile.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        # Configure QoS profile for optimal message delivery characteristics
+        if qos_profile is None:
+            qos_profile = QoSProfile(depth=queue_size)
+            
+            # Set reliability policy - "reliable" guarantees delivery, "best_effort" optimises for throughput
+            if reliability.lower() == "best_effort":
+                qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
+            else:
+                qos_profile.reliability = ReliabilityPolicy.RELIABLE
+            
+            # Set durability policy - "transient_local" enables late-joiner support (ROS1 latch equivalent)
+            if latch:
+                qos_profile.durability = DurabilityPolicy.TRANSIENT_LOCAL
+            else:
+                qos_profile.durability = DurabilityPolicy.VOLATILE
+            
+            # Set history policy - affects message buffering behaviour under load
+            if history.lower() == "keep_all":
+                qos_profile.history = HistoryPolicy.KEEP_ALL
+            else:
+                qos_profile.history = HistoryPolicy.KEEP_LAST
         
+        # Initialise ROS2 publisher with configured QoS
         self.pub = tcp_server.create_publisher(message_class, topic, qos_profile)
 
     def send(self, data):
         """
-        Takes in serialized message data from source outside of the ROS network,
-        deserializes it into its message class, and publishes the message to ROS topic.
+        Deserialise and publish message to ROS2.
 
         Args:
-            data: The already serialized message_class data coming from outside of ROS
+            data: Serialised message bytes from external client
 
         Returns:
-            None: Explicitly return None so behaviour can be
+            None
         """
-        # ROS2 deserialization
+        # Deserialise using ROS2 CDR format
         message = deserialize_message(data, self.msg)
         self.pub.publish(message)
 
@@ -66,7 +86,7 @@ class RosPublisher(RosSender):
 
     def unregister(self):
         """
-        Unregister the publisher
+        Destroy the ROS2 publisher.
         """
         if self.pub is not None:
             self.tcp_server.destroy_publisher(self.pub)

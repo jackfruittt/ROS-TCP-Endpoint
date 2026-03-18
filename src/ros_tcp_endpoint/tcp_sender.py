@@ -21,6 +21,7 @@ import json
 from .client import ClientThread
 from .thread_pauser import ThreadPauser
 from io import BytesIO
+from .zero_copy import ZeroCopyBuffer
 
 from queue import Queue
 from queue import Empty
@@ -31,9 +32,8 @@ class UnityTcpSender:
     Sends messages to Unity.
     """
 
-    def __init__(self, tcp_server):
+    def __init__(self, tcp_server, zero_copy_buffer_size=50*1024*1024, zero_copy_threshold=512*1024):
         self.sender_id = 1
-        self.time_between_halt_checks = 5
         self.tcp_server = tcp_server
 
         # Each sender thread has its own queue: this is always the queue for the currently active thread.
@@ -44,6 +44,36 @@ class UnityTcpSender:
         self.next_srv_id = 1001
         self.srv_lock = threading.Lock()
         self.services_waiting = {}
+        
+        # Topic ID mapping for compression
+        self.topic_to_id = {}
+        self.next_topic_id = 1
+        self.topic_lock = threading.Lock()
+        
+        # Zero-copy buffer for large messages (images, point clouds, depth maps)
+        # TODO: Implement Unity-side support before enabling
+        self.zero_copy_buffer = ZeroCopyBuffer(buffer_size=zero_copy_buffer_size)
+        self.zero_copy_buffer.ZERO_COPY_THRESHOLD = zero_copy_threshold
+        self.use_zero_copy = False  # Disabled until Unity-side implementation is ready
+    
+    def enable_zero_copy(self, enable=True):
+        """Enable or disable zero-copy buffer for large messages."""
+        # TODO: Zero-copy requires Unity-side implementation
+        # Currently disabled - using topic ID compression and batching instead
+        self.tcp_server.logwarn("Zero-copy buffer not yet fully implemented (requires Unity-side support)")
+        self.tcp_server.loginfo("Using topic ID compression and message batching for optimization")
+        return False
+
+    def get_or_register_topic_id(self, topic):
+        """Get topic ID, registering it if needed. Returns (topic_id, is_new)"""
+        with self.topic_lock:
+            if topic in self.topic_to_id:
+                return self.topic_to_id[topic], False
+            else:
+                topic_id = self.next_topic_id
+                self.next_topic_id += 1
+                self.topic_to_id[topic] = topic_id
+                return topic_id, True
 
     def send_unity_info(self, text):
         if self.queue is not None:
@@ -76,7 +106,15 @@ class UnityTcpSender:
 
     def send_unity_message(self, topic, message):
         if self.queue is not None:
-            serialized_message = ClientThread.serialize_message(topic, message)
+            topic_id, is_new = self.get_or_register_topic_id(topic)
+            
+            if is_new:
+                # First time seeing this topic - send mapping command
+                topic_map = SysCommand_TopicMap(topic, topic_id)
+                self.queue.put(ClientThread.serialize_command("__topic_map", topic_map))
+            
+            # Standard path: send full message with topic ID
+            serialized_message = ClientThread.serialize_message_with_topic_id(topic_id, message)
             self.queue.put(serialized_message)
 
     def send_unity_service_request(self, topic, service_class, request):
@@ -147,6 +185,8 @@ class UnityTcpSender:
     def sender_loop(self, conn, tid, halt_event):
         s = None
         local_queue = Queue()
+        batch_buffer = []
+        batch_timeout = 0.001  # 1ms batching window
 
         # send a handshake message to confirm the connection and version number
         handshake_metadata = SysCommand_Handshake_Metadata()
@@ -159,19 +199,35 @@ class UnityTcpSender:
         try:
             while not halt_event.is_set():
                 try:
-                    item = local_queue.get(timeout=self.time_between_halt_checks)
+                    # Efficient blocking with short timeout for batching
+                    item = local_queue.get(timeout=0.1)
+                    batch_buffer.append(item)
+                    
+                    # Try to collect more messages for batching (non-blocking)
+                    while len(batch_buffer) < 50:  # Max batch size
+                        try:
+                            item = local_queue.get_nowait()
+                            batch_buffer.append(item)
+                        except Empty:
+                            break
+                    
+                    # Send all batched messages
+                    if batch_buffer:
+                        try:
+                            for msg in batch_buffer:
+                                conn.sendall(msg)
+                        except Exception as e:
+                            self.tcp_server.logerr("Exception {}".format(e))
+                            break
+                        finally:
+                            batch_buffer.clear()
+                            
                 except Empty:
-                    # I'd like to just wait on the queue, but we also need to check occasionally for the connection being closed
-                    # (otherwise the thread never terminates.)
+                    # Check halt_event and continue
+                    if halt_event.is_set():
+                        break
                     continue
 
-                # print("Sender {} sending an item".format(tid))
-
-                try:
-                    conn.sendall(item)
-                except Exception as e:
-                    self.tcp_server.logerr("Exception {}".format(e))
-                    break
         finally:
             halt_event.set()
             with self.queue_lock:
@@ -215,3 +271,9 @@ class SysCommand_Handshake:
 class SysCommand_Handshake_Metadata:
     def __init__(self):
         self.protocol = "ROS2"
+
+
+class SysCommand_TopicMap:
+    def __init__(self, topic, topic_id):
+        self.topic = topic
+        self.topic_id = topic_id

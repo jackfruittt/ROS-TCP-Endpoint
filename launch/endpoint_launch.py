@@ -35,6 +35,24 @@ def generate_launch_description():
         description='Port for the TCP server'
     )
     
+    enable_zero_copy_arg = DeclareLaunchArgument(
+        'enable_zero_copy',
+        default_value='false',
+        description='Enable zero-copy buffer (requires Unity-side implementation - currently disabled)'
+    )
+    
+    zero_copy_buffer_size_arg = DeclareLaunchArgument(
+        'zero_copy_buffer_size',
+        default_value='52428800',  # 50MB
+        description='Zero-copy buffer size in bytes (default: 50MB for multiple camera streams)'
+    )
+    
+    zero_copy_threshold_arg = DeclareLaunchArgument(
+        'zero_copy_threshold',
+        default_value='524288',  # 512KB
+        description='Message size threshold for using zero-copy in bytes (default: 512KB)'
+    )
+    
     # Create the node
     endpoint_node = Node(
         package='ros_tcp_endpoint',
@@ -44,11 +62,17 @@ def generate_launch_description():
         parameters=[{
             'tcp_ip': LaunchConfiguration('tcp_ip'),
             'tcp_port': LaunchConfiguration('tcp_port'),
+            'enable_zero_copy': LaunchConfiguration('enable_zero_copy'),
+            'zero_copy_buffer_size': LaunchConfiguration('zero_copy_buffer_size'),
+            'zero_copy_threshold': LaunchConfiguration('zero_copy_threshold'),
         }]
     )
     
     return LaunchDescription([
         tcp_ip_arg,
         tcp_port_arg,
+        enable_zero_copy_arg,
+        zero_copy_buffer_size_arg,
+        zero_copy_threshold_arg,
         endpoint_node
     ])

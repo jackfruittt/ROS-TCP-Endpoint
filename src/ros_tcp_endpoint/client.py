@@ -90,21 +90,39 @@ class ClientThread(threading.Thread):
         """
         Decode destination and full message size from socket connection.
         Grab bytes in chunks until full message has been read.
+        Supports both topic string and topic ID formats.
         """
         data = b""
 
-        destination = self.read_string()
-        full_message_size = ClientThread.read_int32(conn)
-
-        data = ClientThread.recvall(conn, full_message_size)
+        # Read first 4 bytes to check format
+        first_bytes = ClientThread.recvall(conn, 4)
+        first_int = struct.unpack("<i", first_bytes)[0]
+        
+        if first_int == -1:
+            # Topic ID format: marker + topic_id (uint16) + msg_len + message
+            topic_id_bytes = ClientThread.recvall(conn, 2)
+            topic_id = struct.unpack("<H", topic_id_bytes)[0]
+            
+            # Get topic name from ID mapping (handled by Unity side)
+            destination = f"__topicid_{topic_id}"
+            
+            full_message_size = ClientThread.read_int32(conn)
+            data = ClientThread.recvall(conn, full_message_size)
+        else:
+            # Original string format: topic_len + topic + msg_len + message
+            str_len = first_int
+            str_bytes = ClientThread.recvall(conn, str_len)
+            destination = str_bytes.decode("utf-8").rstrip("\x00")
+            
+            full_message_size = ClientThread.read_int32(conn)
+            data = ClientThread.recvall(conn, full_message_size)
 
         if full_message_size > 0 and not data:
             self.tcp_server.logerr(
                 "No data for a message size of {}, breaking!".format(full_message_size)
             )
-            return
+            return destination, data
 
-        destination = destination.rstrip("\x00")
         return destination, data
 
     @staticmethod
@@ -134,16 +152,76 @@ class ClientThread(threading.Thread):
         return serialized_message
 
     @staticmethod
+    def serialize_message_with_topic_id(topic_id, message):
+        """
+        Serialize a message with topic ID for compression.
+        Format: 0xFFFFFFFF (marker) + topic_id (uint16) + message_len (uint32) + message
+        
+        Args:
+            topic_id: uint16 topic identifier
+            message: message class to serialize
+            
+        Returns:
+            serialized message with topic ID
+        """
+        # Use -1 (0xFFFFFFFF) as marker to indicate topic ID format
+        marker = struct.pack("<i", -1)
+        topic_id_bytes = struct.pack("<H", topic_id)
+        
+        # ROS2 serialization
+        from rclpy.serialization import serialize_message
+        serial_response = serialize_message(message)
+        response_len = len(serial_response)
+        
+        msg_length = struct.pack("<I", response_len)
+        serialized_message = marker + topic_id_bytes + msg_length + serial_response
+        
+        return serialized_message
+
+    @staticmethod
+    def serialize_topic_id_mapping(topic, topic_id):
+        """
+        Serialize a topic ID mapping command.
+        Format: topic_string_len + topic_string + topic_id
+        
+        Args:
+            topic: topic name string
+            topic_id: uint16 topic identifier
+            
+        Returns:
+            serialized topic mapping
+        """
+        topic_bytes = topic.encode("utf-8")
+        topic_len = len(topic_bytes)
+        topic_info = struct.pack("<I%ss" % topic_len, topic_len, topic_bytes)
+        topic_id_bytes = struct.pack("<H", topic_id)
+        
+        return topic_info + topic_id_bytes
+
+    @staticmethod
     def serialize_command(command, params):
+        """
+        Serialize a command with parameters.
+        Uses binary encoding for efficiency where possible, falls back to JSON.
+        """
         cmd_bytes = command.encode("utf-8")
         cmd_length = len(cmd_bytes)
         cmd_info = struct.pack("<I%ss" % cmd_length, cmd_length, cmd_bytes)
 
-        json_bytes = json.dumps(params.__dict__).encode("utf-8")
-        json_length = len(json_bytes)
-        json_info = struct.pack("<I%ss" % json_length, json_length, json_bytes)
-
-        return cmd_info + json_info
+        # Use binary encoding for common commands (where Unity supports it)
+        if command in ("__request", "__response"):
+            # Binary format: srv_id (int32)
+            srv_id = getattr(params, 'srv_id', 0)
+            binary_params = struct.pack("<i", srv_id)
+            params_length = len(binary_params)
+            params_info = struct.pack("<I", params_length) + binary_params
+            return cmd_info + params_info
+        else:
+            # Use JSON for all other commands (including __topic_map for Unity compatibility)
+            json_bytes = json.dumps(params.__dict__).encode("utf-8")
+            json_length = len(json_bytes)
+            json_info = struct.pack("<I%ss" % json_length, json_length, json_bytes)
+            return cmd_info + json_info
 
     def send_ros_service_request(self, srv_id, destination, data):
         if destination not in self.tcp_server.ros_services_table.keys():

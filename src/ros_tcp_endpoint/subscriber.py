@@ -13,6 +13,7 @@
 #  limitations under the License.
 
 import re
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 from .communication import RosReceiver
 from .client import ClientThread
@@ -20,16 +21,21 @@ from .client import ClientThread
 
 class RosSubscriber(RosReceiver):
     """
-    Class to send messages outside of ROS network
+    Subscribes to ROS topics and forwards messages to external clients.
     """
 
-    def __init__(self, topic, message_class, tcp_server, queue_size=10):
+    def __init__(self, topic, message_class, tcp_server, queue_size=10, 
+                 qos_profile=None, reliability="reliable", durability="volatile", history="keep_last"):
         """
-
         Args:
-            topic:         Topic name to publish messages to
-            message_class: The message class in the workspace
-            queue_size:    Max number of entries to maintain in an outgoing queue
+            topic:         Topic name to subscribe to
+            message_class: Message class for deserialisation
+            tcp_server:    TcpServer node instance
+            queue_size:    Max messages to buffer
+            qos_profile:   Optional QoSProfile (overrides other QoS params)
+            reliability:   "reliable" or "best_effort"
+            durability:    "volatile" or "transient_local"
+            history:       "keep_last" or "keep_all"
         """
         strippedTopic = re.sub("[^A-Za-z0-9_]+", "", topic)
         self.node_name = "{}_RosSubscriber".format(strippedTopic)
@@ -39,30 +45,52 @@ class RosSubscriber(RosReceiver):
         self.tcp_server = tcp_server
         self.queue_size = queue_size
 
-        # Start Subscriber listener function using ROS2 create_subscription
+        # Configure QoS profile for optimal publisher-subscriber compatibility
+        if qos_profile is None:
+            qos_profile = QoSProfile(depth=queue_size)
+            
+            # Set reliability policy - critical for matching publisher QoS
+            if reliability.lower() == "best_effort":
+                qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
+            else:
+                qos_profile.reliability = ReliabilityPolicy.RELIABLE
+            
+            # Set durability policy - determines late-joiner behaviour
+            if durability.lower() == "transient_local":
+                qos_profile.durability = DurabilityPolicy.TRANSIENT_LOCAL
+            else:
+                qos_profile.durability = DurabilityPolicy.VOLATILE
+            
+            # Set history policy - affects message buffering behaviour
+            if history.lower() == "keep_all":
+                qos_profile.history = HistoryPolicy.KEEP_ALL
+            else:
+                qos_profile.history = HistoryPolicy.KEEP_LAST
+
+        # Initialise ROS2 subscription with configured QoS
         self.sub = tcp_server.create_subscription(
             self.msg,
             self.topic,
             self.send,
-            queue_size
+            qos_profile
         )
 
     def send(self, data):
         """
-        Connect to TCP endpoint on client and pass along message
+        Forward ROS message to TCP client.
+        
         Args:
-            data: message data to send outside of ROS network
+            data: Message instance from ROS2
 
         Returns:
-            self.msg: The deserialize message
-
+            self.msg: Message class type
         """
         self.tcp_server.send_unity_message(self.topic, data)
         return self.msg
 
     def unregister(self):
         """
-        Unregister the subscriber
+        Destroy the ROS2 subscription.
         """
         if self.sub is not None:
             self.tcp_server.destroy_subscription(self.sub)

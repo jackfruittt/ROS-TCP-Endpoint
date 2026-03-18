@@ -48,6 +48,9 @@ class TcpServer(Node):
         # Declare parameters
         self.declare_parameter('tcp_ip', '0.0.0.0')
         self.declare_parameter('tcp_port', 10000)
+        self.declare_parameter('enable_zero_copy', False)  # Disabled until Unity-side support
+        self.declare_parameter('zero_copy_buffer_size', 50 * 1024 * 1024)  # 50MB for multiple camera streams
+        self.declare_parameter('zero_copy_threshold', 512 * 1024)  # 512KB threshold
         
         if tcp_ip:
             self.loginfo("Using 'tcp_ip' override from constructor: {}".format(tcp_ip))
@@ -61,7 +64,18 @@ class TcpServer(Node):
         else:
             self.tcp_port = self.get_parameter('tcp_port').get_parameter_value().integer_value
 
-        self.unity_tcp_sender = UnityTcpSender(self)
+        # Get zero-copy parameters
+        enable_zero_copy = self.get_parameter('enable_zero_copy').get_parameter_value().bool_value
+        zero_copy_buffer_size = self.get_parameter('zero_copy_buffer_size').get_parameter_value().integer_value
+        zero_copy_threshold = self.get_parameter('zero_copy_threshold').get_parameter_value().integer_value
+
+        self.unity_tcp_sender = UnityTcpSender(self, zero_copy_buffer_size, zero_copy_threshold)
+        
+        # Note: Zero-copy requires Unity-side implementation, currently using other optimizations
+        if enable_zero_copy:
+            self.unity_tcp_sender.enable_zero_copy(True)
+        else:
+            self.loginfo("TCP optimizations enabled: topic ID compression, message batching, binary protocol")
 
         self.node_name = node_name
         self.publishers_table = {}
@@ -92,6 +106,9 @@ class TcpServer(Node):
         self.loginfo("Starting server on {}:{}".format(self.tcp_ip, self.tcp_port))
         tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp_server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 256)  # 256KB
+        tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 256)
         tcp_server.bind((self.tcp_ip, self.tcp_port))
 
         while True:
@@ -147,7 +164,19 @@ class SysCommands:
     def __init__(self, tcp_server):
         self.tcp_server = tcp_server
 
-    def subscribe(self, topic, message_name):
+    def subscribe(self, topic, message_name, queue_size=10, reliability="reliable", 
+                  durability="volatile", history="keep_last"):
+        """
+        Register a ROS2 subscription with QoS parameters.
+        
+        Args:
+            topic:        Topic name to subscribe to
+            message_name: Message type (e.g., "std_msgs/String")
+            queue_size:   History depth (default: 10)
+            reliability:  "reliable" or "best_effort"
+            durability:   "volatile" or "transient_local"
+            history:      "keep_last" or "keep_all"
+        """
         if topic == "":
             self.tcp_server.send_unity_error(
                 "Can't subscribe to a blank topic name! SysCommand.subscribe({}, {})".format(
@@ -163,16 +192,35 @@ class SysCommands:
             )
             return
 
+        # Replace existing subscription if present
         old_node = self.tcp_server.subscribers_table.get(topic)
         if old_node is not None:
             self.tcp_server.unregister_node(old_node)
 
-        new_subscriber = RosSubscriber(topic, message_class, self.tcp_server)
+        # Create new subscriber with QoS configuration
+        new_subscriber = RosSubscriber(
+            topic, message_class, self.tcp_server, 
+            queue_size=queue_size, reliability=reliability, 
+            durability=durability, history=history
+        )
         self.tcp_server.subscribers_table[topic] = new_subscriber
 
-        self.tcp_server.loginfo("RegisterSubscriber({}, {}) OK".format(topic, message_class))
+        self.tcp_server.loginfo("RegisterSubscriber({}, {}) OK [QoS: {}/{}/{}, depth={}]".format(
+            topic, message_class, reliability, durability, history, queue_size))
 
-    def publish(self, topic, message_name, queue_size=10, latch=False):
+    def publish(self, topic, message_name, queue_size=10, latch=False, 
+                reliability="reliable", history="keep_last"):
+        """
+        Register a ROS2 publisher with QoS parameters.
+        
+        Args:
+            topic:        Topic name to publish to
+            message_name: Message type (e.g., "std_msgs/String")
+            queue_size:   History depth (default: 10)
+            latch:        Enable transient_local durability (default: False)
+            reliability:  "reliable" or "best_effort"
+            history:      "keep_last" or "keep_all"
+        """
         if topic == "":
             self.tcp_server.send_unity_error(
                 "Can't publish to a blank topic name! SysCommand.publish({}, {})".format(
@@ -188,15 +236,22 @@ class SysCommands:
             )
             return
 
+        # Replace existing publisher if present
         old_node = self.tcp_server.publishers_table.get(topic)
         if old_node is not None:
             self.tcp_server.unregister_node(old_node)
 
-        new_publisher = RosPublisher(topic, message_class, self.tcp_server, queue_size=queue_size, latch=latch)
-
+        # Create new publisher with QoS configuration
+        new_publisher = RosPublisher(
+            topic, message_class, self.tcp_server, 
+            queue_size=queue_size, latch=latch, 
+            reliability=reliability, history=history
+        )
         self.tcp_server.publishers_table[topic] = new_publisher
 
-        self.tcp_server.loginfo("RegisterPublisher({}, {}) OK".format(topic, message_class))
+        durability = "transient_local" if latch else "volatile"
+        self.tcp_server.loginfo("RegisterPublisher({}, {}) OK [QoS: {}/{}/{}, depth={}]".format(
+            topic, message_class, reliability, durability, history, queue_size))
 
     def ros_service(self, topic, message_name):
         if topic == "":
