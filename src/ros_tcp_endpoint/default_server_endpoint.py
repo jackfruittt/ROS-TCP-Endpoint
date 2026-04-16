@@ -14,22 +14,30 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import os
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 
 from ros_tcp_endpoint import TcpServer
 
 
 def main(args=None):
-    # Start the Server Endpoint
     rclpy.init(args=args)
     tcp_server = TcpServer('unity_endpoint')
     tcp_server.start()
-    
+
+    # MultiThreadedExecutor lets sensor stream callbacks (depth, colour, camera_info)
+    # run concurrently. Override via ROS_TCP_EXECUTOR_THREADS env var.
+    num_threads = int(os.environ.get('ROS_TCP_EXECUTOR_THREADS', '4'))
+    executor = MultiThreadedExecutor(num_threads=num_threads)
+    executor.add_node(tcp_server)
+
     try:
-        rclpy.spin(tcp_server)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         tcp_server.destroy_node()
         rclpy.shutdown()
 

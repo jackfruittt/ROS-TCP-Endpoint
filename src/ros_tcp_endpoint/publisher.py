@@ -43,29 +43,24 @@ class RosPublisher(RosSender):
         self.msg_instance = message_class()
         self.tcp_server = tcp_server
         
-        # Configure QoS profile for optimal message delivery characteristics
         if qos_profile is None:
             qos_profile = QoSProfile(depth=queue_size)
             
-            # Set reliability policy - "reliable" guarantees delivery, "best_effort" optimises for throughput
             if reliability.lower() == "best_effort":
                 qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
             else:
                 qos_profile.reliability = ReliabilityPolicy.RELIABLE
             
-            # Set durability policy - "transient_local" enables late-joiner support (ROS1 latch equivalent)
             if latch:
                 qos_profile.durability = DurabilityPolicy.TRANSIENT_LOCAL
             else:
                 qos_profile.durability = DurabilityPolicy.VOLATILE
             
-            # Set history policy - affects message buffering behaviour under load
             if history.lower() == "keep_all":
                 qos_profile.history = HistoryPolicy.KEEP_ALL
             else:
                 qos_profile.history = HistoryPolicy.KEEP_LAST
         
-        # Initialise ROS2 publisher with configured QoS
         self.pub = tcp_server.create_publisher(message_class, topic, qos_profile)
 
     def send(self, data):
@@ -78,7 +73,6 @@ class RosPublisher(RosSender):
         Returns:
             None
         """
-        # Deserialise using ROS2 CDR format
         message = deserialize_message(data, self.msg)
         self.pub.publish(message)
 

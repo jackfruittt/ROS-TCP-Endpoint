@@ -19,6 +19,9 @@ from io import BytesIO
 import threading
 import json
 
+# Hot-path import alias - avoids repeated import-system lookup per frame
+from rclpy.serialization import serialize_message as _rclpy_serialize
+
 from .exceptions import TopicOrServiceNameDoesNotExistError
 
 
@@ -38,6 +41,10 @@ class ClientThread(threading.Thread):
             incoming_port: connected from this port
         """
         self.conn = conn
+        # Low-latency socket tuning: disable Nagle, tune send/receive buffers for streaming
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)   # 512 KB
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,  64 * 1024)   #  64 KB
         self.tcp_server = tcp_server
         self.incoming_ip = incoming_ip
         self.incoming_port = incoming_port
@@ -141,9 +148,8 @@ class ClientThread(threading.Thread):
         length = len(dest_bytes)
         dest_info = struct.pack("<I%ss" % length, length, dest_bytes)
 
-        # ROS2 serialization
-        from rclpy.serialization import serialize_message
-        serial_response = serialize_message(message)
+        # ROS2 serialization (module-level import)
+        serial_response = _rclpy_serialize(message)
         response_len = len(serial_response)
 
         msg_length = struct.pack("<I", response_len)
@@ -168,9 +174,8 @@ class ClientThread(threading.Thread):
         marker = struct.pack("<i", -1)
         topic_id_bytes = struct.pack("<H", topic_id)
         
-        # ROS2 serialization
-        from rclpy.serialization import serialize_message
-        serial_response = serialize_message(message)
+        # ROS2 serialization (module-level import)
+        serial_response = _rclpy_serialize(message)
         response_len = len(serial_response)
         
         msg_length = struct.pack("<I", response_len)
@@ -202,22 +207,19 @@ class ClientThread(threading.Thread):
     def serialize_command(command, params):
         """
         Serialize a command with parameters.
-        Uses binary encoding for efficiency where possible, falls back to JSON.
+        Uses binary encoding for __request/__response, JSON for everything else.
         """
         cmd_bytes = command.encode("utf-8")
         cmd_length = len(cmd_bytes)
         cmd_info = struct.pack("<I%ss" % cmd_length, cmd_length, cmd_bytes)
 
-        # Use binary encoding for common commands (where Unity supports it)
         if command in ("__request", "__response"):
-            # Binary format: srv_id (int32)
             srv_id = getattr(params, 'srv_id', 0)
             binary_params = struct.pack("<i", srv_id)
             params_length = len(binary_params)
             params_info = struct.pack("<I", params_length) + binary_params
             return cmd_info + params_info
         else:
-            # Use JSON for all other commands (including __topic_map for Unity compatibility)
             json_bytes = json.dumps(params.__dict__).encode("utf-8")
             json_length = len(json_bytes)
             json_info = struct.pack("<I%ss" % json_length, json_length, json_bytes)

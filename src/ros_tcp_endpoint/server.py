@@ -107,8 +107,8 @@ class TcpServer(Node):
         tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         tcp_server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 256)  # 256KB
-        tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 256)
+        # Note: SO_RCVBUF/SO_SNDBUF on the listening socket are NOT inherited by
+        # accepted connections on Linux. Per-connection tuning is in client.py.
         tcp_server.bind((self.tcp_ip, self.tcp_port))
 
         while True:

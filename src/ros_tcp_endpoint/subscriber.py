@@ -14,6 +14,7 @@
 
 import re
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 from .communication import RosReceiver
 from .client import ClientThread
@@ -23,6 +24,12 @@ class RosSubscriber(RosReceiver):
     """
     Subscribes to ROS topics and forwards messages to external clients.
     """
+
+    # Topic tokens that identify high-frequency sensor streams.
+    # These get BEST_EFFORT QoS with shallow depth to minimise latency;
+    # reliable delivery is unnecessary for live streaming where a newer
+    # frame immediately supersedes any dropped one.
+    _STREAM_TOKENS = ('/image', '/depth', '/compressed', '/camera_info', '/points', '/gyro', '/accel', '/imu')
 
     def __init__(self, topic, message_class, tcp_server, queue_size=10, 
                  qos_profile=None, reliability="reliable", durability="volatile", history="keep_last"):
@@ -43,36 +50,39 @@ class RosSubscriber(RosReceiver):
         self.topic = topic
         self.msg = message_class
         self.tcp_server = tcp_server
+
+        # Auto-tune QoS for sensor streams: BEST_EFFORT + shallow depth to minimise latency
+        is_stream = any(tok in topic for tok in self._STREAM_TOKENS)
+        if is_stream:
+            reliability = "best_effort"
+            queue_size  = 2
         self.queue_size = queue_size
 
-        # Configure QoS profile for optimal publisher-subscriber compatibility
         if qos_profile is None:
             qos_profile = QoSProfile(depth=queue_size)
             
-            # Set reliability policy - critical for matching publisher QoS
             if reliability.lower() == "best_effort":
                 qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
             else:
                 qos_profile.reliability = ReliabilityPolicy.RELIABLE
             
-            # Set durability policy - determines late-joiner behaviour
             if durability.lower() == "transient_local":
                 qos_profile.durability = DurabilityPolicy.TRANSIENT_LOCAL
             else:
                 qos_profile.durability = DurabilityPolicy.VOLATILE
             
-            # Set history policy - affects message buffering behaviour
             if history.lower() == "keep_all":
                 qos_profile.history = HistoryPolicy.KEEP_ALL
             else:
                 qos_profile.history = HistoryPolicy.KEEP_LAST
 
-        # Initialise ROS2 subscription with configured QoS
+        # ReentrantCallbackGroup lets concurrent callbacks run on the MultiThreadedExecutor
         self.sub = tcp_server.create_subscription(
             self.msg,
             self.topic,
             self.send,
-            qos_profile
+            qos_profile,
+            callback_group=ReentrantCallbackGroup()
         )
 
     def send(self, data):
