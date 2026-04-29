@@ -43,8 +43,11 @@ class ClientThread(threading.Thread):
         self.conn = conn
         # Low-latency socket tuning: disable Nagle, tune send/receive buffers for streaming
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)   # 512 KB
-        conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,  64 * 1024)   #  64 KB
+        # 4MB send buffer: a 640x480 RGB8 frame is 922KB and a Z16 depth frame is 614KB.
+        # A single batch of both fits in one sendall without a kernel partial-send loop.
+        # Linux doubles the requested value internally, so the real buffer is 8MB.
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,  64 * 1024)
         self.tcp_server = tcp_server
         self.incoming_ip = incoming_ip
         self.incoming_port = incoming_port
