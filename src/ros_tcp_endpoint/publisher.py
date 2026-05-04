@@ -23,6 +23,12 @@ class RosPublisher(RosSender):
     Publishes messages to ROS topics from external clients.
     """
 
+    # Topics where only the latest message matters. Use BEST_EFFORT QoS + depth 1.
+    _LATEST_ONLY_TOKENS = (
+        '/delta_twist_cmds', '/delta_joint_cmds', '/twist_cmd',
+        '/joy', '/servo_control',
+    )
+
     def __init__(self, topic, message_class, tcp_server, queue_size=10, latch=False,
                  qos_profile=None, reliability="reliable", history="keep_last"):
         """
@@ -42,25 +48,31 @@ class RosPublisher(RosSender):
         self.msg = message_class
         self.msg_instance = message_class()
         self.tcp_server = tcp_server
-        
+
+        # Use BEST_EFFORT QoS + depth 1 for servo/control topics so stale commands don't queue.
         if qos_profile is None:
+            is_latest_only = any(tok in topic for tok in self._LATEST_ONLY_TOKENS)
+            if is_latest_only:
+                reliability = "best_effort"
+                queue_size  = 1
+
             qos_profile = QoSProfile(depth=queue_size)
-            
+
             if reliability.lower() == "best_effort":
                 qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
             else:
                 qos_profile.reliability = ReliabilityPolicy.RELIABLE
-            
+
             if latch:
                 qos_profile.durability = DurabilityPolicy.TRANSIENT_LOCAL
             else:
                 qos_profile.durability = DurabilityPolicy.VOLATILE
-            
+
             if history.lower() == "keep_all":
                 qos_profile.history = HistoryPolicy.KEEP_ALL
             else:
                 qos_profile.history = HistoryPolicy.KEEP_LAST
-        
+
         self.pub = tcp_server.create_publisher(message_class, topic, qos_profile)
 
     def send(self, data):

@@ -13,6 +13,7 @@
 #  limitations under the License.
 
 import re
+import time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from rclpy.callback_groups import ReentrantCallbackGroup
 
@@ -25,11 +26,23 @@ class RosSubscriber(RosReceiver):
     Subscribes to ROS topics and forwards messages to external clients.
     """
 
-    # Topic tokens that identify high-frequency sensor streams.
-    # These get BEST_EFFORT QoS with shallow depth to minimise latency;
-    # reliable delivery is unnecessary for live streaming where a newer
-    # frame immediately supersedes any dropped one.
+    # Stream topics get BEST_EFFORT QoS + shallow queue depth.
     _STREAM_TOKENS = ('/image', '/depth', '/compressed', '/camera_info', '/points', '/gyro', '/accel', '/imu')
+
+    # Topics to throttle before forwarding to Unity. Key is a topic substring, value is max Hz.
+    _THROTTLE_TABLE = {
+        '/joint_states':                    30.0,   # UR driver publishes at 500 Hz
+        '/tf':                              20.0,
+        '/servo_node/status':               10.0,
+        '/servo_node/collision_velocity_scale': 10.0,
+        '/speed_scaling_state_broadcaster': 10.0,
+        '/image_raw/compressed':            30.0,
+        '/image_raw':                       30.0,
+        '/depth/image_rect_raw':            15.0,   # 300 KB/frame, cap bandwidth
+        '/aligned_depth_to_color/image_raw': 15.0,
+        '/gyro/sample':                      5.0,   # unused, protective cap
+        '/accel/sample':                     5.0,   # unused, protective cap
+    }
 
     def __init__(self, topic, message_class, tcp_server, queue_size=10, 
                  qos_profile=None, reliability="reliable", durability="volatile", history="keep_last"):
@@ -51,7 +64,15 @@ class RosSubscriber(RosReceiver):
         self.msg = message_class
         self.tcp_server = tcp_server
 
-        # Auto-tune QoS for sensor streams: BEST_EFFORT + shallow depth to minimise latency
+        throttle_hz = 0.0
+        for tok, hz in self._THROTTLE_TABLE.items():
+            if tok in topic:
+                throttle_hz = hz
+                break
+        self._throttle_interval = (1.0 / throttle_hz) if throttle_hz > 0 else 0.0
+        self._last_sent_time = 0.0
+
+        # Use BEST_EFFORT QoS + shallow depth for sensor streams
         is_stream = any(tok in topic for tok in self._STREAM_TOKENS)
         if is_stream:
             reliability = "best_effort"
@@ -76,7 +97,6 @@ class RosSubscriber(RosReceiver):
             else:
                 qos_profile.history = HistoryPolicy.KEEP_LAST
 
-        # ReentrantCallbackGroup lets concurrent callbacks run on the MultiThreadedExecutor
         self.sub = tcp_server.create_subscription(
             self.msg,
             self.topic,
@@ -87,14 +107,20 @@ class RosSubscriber(RosReceiver):
 
     def send(self, data):
         """
-        Forward ROS message to TCP client.
-        
+        Forward ROS message to TCP client, respecting the per-topic throttle.
+
         Args:
             data: Message instance from ROS2
 
         Returns:
             self.msg: Message class type
         """
+        if self._throttle_interval > 0.0:
+            now = time.monotonic()
+            if now - self._last_sent_time < self._throttle_interval:
+                return self.msg          # drop: too soon since last forward
+            self._last_sent_time = now
+
         self.tcp_server.send_unity_message(self.topic, data)
         return self.msg
 

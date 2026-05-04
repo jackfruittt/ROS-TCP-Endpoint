@@ -54,11 +54,11 @@ class UnityTcpSender:
         self.next_topic_id = 1
         self.topic_lock = threading.Lock()
 
-        # Latest-frame slots for streaming topics - deferred serialization avoids
-        # wasting CPU on frames that will be dropped before the sender thread runs
-        self._stream_slots      = {}   # topic_id (int) -> raw ROS message object
+        # Latest-frame slots for streaming topics. Serialization is deferred
+        # so frames dropped before the sender thread runs never waste CPU.
+        self._stream_slots      = {}   # topic_id (int) -> raw ROS message
         self._stream_slot_lock  = threading.Lock()
-        self._stream_event      = threading.Event()  # set whenever any slot is updated
+        self._stream_event      = threading.Event()
         
         # Zero-copy buffer (TODO: requires Unity-side implementation before enabling)
         self.zero_copy_buffer = ZeroCopyBuffer(buffer_size=zero_copy_buffer_size)
@@ -212,18 +212,21 @@ class UnityTcpSender:
 
         try:
             while not halt_event.is_set():
-                # 1. Drain any latest-frame slots first (highest priority - freshest data).
-                #    Slots hold raw message objects; we serialize here (sender thread) so
-                #    the ROS executor thread is never blocked by CDR serialization work.
-                # 1ms max wait keeps sender-loop latency tight at 90fps (11ms frame budget).
-                # 5ms was acceptable at 30fps but adds unnecessary jitter margin at 90fps.
-                self._stream_event.wait(timeout=0.001)
+                # Wait up to 8ms for a stream or command event.
+                # Reduces busy-loop wakeups vs 1ms with negligible latency impact at 30fps.
+                self._stream_event.wait(timeout=0.008)
                 self._stream_event.clear()
 
+                # 1. Drain command queue first so __topic_map arrives before stream frames.
+                while True:
+                    try:
+                        batch_buffer.append(local_queue.get_nowait())
+                    except Empty:
+                        break
+
+                # 2. Drain latest-frame slots. Serialize outside the lock to reduce contention.
                 with self._stream_slot_lock:
                     if self._stream_slots:
-                        # Snapshot and clear atomically under the lock;
-                        # serialize outside the lock so we don't block incoming callbacks.
                         pending = list(self._stream_slots.items())
                         self._stream_slots.clear()
 
@@ -236,14 +239,7 @@ class UnityTcpSender:
                         self.tcp_server.logerr("serialize error topic_id={}: {}".format(topic_id, e))
                 pending = []
 
-                # 2. Drain command/service queue (non-blocking after slot check).
-                while True:
-                    try:
-                        batch_buffer.append(local_queue.get_nowait())
-                    except Empty:
-                        break
-
-                # 3. Single sendall - one syscall regardless of batch size.
+                # 3. Single sendall regardless of batch size.
                 if batch_buffer:
                     try:
                         conn.sendall(b"".join(batch_buffer))

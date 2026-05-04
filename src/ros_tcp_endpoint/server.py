@@ -110,10 +110,12 @@ class TcpServer(Node):
         # Note: SO_RCVBUF/SO_SNDBUF on the listening socket are NOT inherited by
         # accepted connections on Linux. Per-connection tuning is in client.py.
         tcp_server.bind((self.tcp_ip, self.tcp_port))
+        # listen() must be called once before the accept loop, not on every iteration.
+        # Calling it repeatedly inside the loop is a no-op on Linux but adds a needless
+        # syscall on every iteration of the hot path.
+        tcp_server.listen(self.connections)
 
         while True:
-            tcp_server.listen(self.connections)
-
             try:
                 (conn, (ip, port)) = tcp_server.accept()
                 ClientThread(conn, self, ip, port).start()
